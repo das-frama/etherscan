@@ -10,13 +10,12 @@ import (
 	"time"
 )
 
-const offset = 1000
-
 var holders *Holders
 
 func main() {
 	// Set up flags.
 	apiKey := flag.String("k", "", "etherscan.io api key to perform all requests (leave it empty to use developer key)")
+	offset := flag.Int("o", 1000, "how many records per page etherscan should retrieve")
 	flag.Usage = PrintHelp
 	flag.Parse()
 	// Check arguments.
@@ -55,7 +54,7 @@ func main() {
 	log.Println("Start fetching transactions. It should take just a couple of minutes or so.")
 	for !done {
 		wg.Add(1)
-		go fetchTransactions(c, contractAddress, page, &done, wg)
+		go fetchTransactions(c, contractAddress, page, *offset, &done, wg)
 		page++
 		time.Sleep(time.Second * 1)
 	}
@@ -69,12 +68,14 @@ func main() {
 	log.Printf("Done in %s.\n", end.String())
 }
 
-func fetchTransactions(c *Client, contractAddress string, page int, done *bool, wg *sync.WaitGroup) {
+func fetchTransactions(c *Client, contractAddress string, page, offset int, done *bool, wg *sync.WaitGroup) {
 	defer wg.Done()
 	log.Printf("Fetching %d page...\n", page)
 	txns, err := c.TokenTransferEvents(contractAddress, "", true, page, offset)
 	if err != nil {
-		log.Fatalln(err)
+		log.Printf("%s. Refetching %d page...\n", err, page)
+		wg.Add(1)
+		go fetchTransactions(c, contractAddress, page, offset, done, wg)
 		return
 	}
 	// Page overflow its maximum.
