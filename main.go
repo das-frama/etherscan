@@ -10,110 +10,136 @@ import (
 	"time"
 )
 
-var holders *Holders
+const maxRequest = 10
+
+var (
+	maxNumber int
+	apiKey    string
+	verbose   bool
+	holders   *Holders
+	client    *Client
+	wg        *sync.WaitGroup
+)
+
+func init() {
+	apiKey = "AQDH6DUI9THYHCS21XM81CEXS21DU14TI2"
+	holders = NewHolders()
+	wg = &sync.WaitGroup{}
+}
 
 func main() {
 	// Set up flags.
-	apiKey := flag.String("k", "", "etherscan.io api key to perform all requests (leave it empty to use developer key)")
-	offset := flag.Int("o", 1000, "how many records per page etherscan should retrieve")
-	flag.Usage = PrintHelp
+	flag.StringVar(&apiKey, "k", "", "etherscan.io api key to perform all requests (leave it empty to use developer key)")
+	flag.IntVar(&maxNumber, "n", 1000, "how many users to fetch")
+	flag.BoolVar(&verbose, "v", false, "verbose output")
+	flag.Usage = printHelp
 	flag.Parse()
 	// Check arguments.
 	args := flag.Args()
 	if len(args) < 2 {
 		fmt.Println("Not enough arguments!")
-		PrintHelp()
+		printHelp()
 		os.Exit(0)
 	}
 	// Set token and file from args.
-	contractAddress := args[0]
-	file, err := os.OpenFile(args[1], os.O_CREATE|os.O_WRONLY, 0660)
-	if err != nil {
-		log.Fatalln(err)
-		os.Exit(-1)
-	}
-	defer file.Close()
-	// Truncate file.
-	file.Truncate(0)
-	file.Seek(0, 0)
+	address := args[0]
 
-	// Set ApiKey if non is provided.
-	if *apiKey == "" {
-		*apiKey = "AQDH6DUI9THYHCS21XM81CEXS21DU14TI2"
-	}
-	// Set etherscan client.
-	c := NewClient(*apiKey)
+	// Init etherscan API client.
+	client = NewClient(apiKey)
 
-	// Init variables.
-	holders = NewHolders()
-	wg := &sync.WaitGroup{}
-	page := 1
-	done := false
+	// Start fetching process.
+	log.Println("Start fetching transactions.")
 	start := time.Now()
-
-	log.Println("Start fetching transactions. It should take just a couple of minutes or so.")
+	page := 1
+	offset := 3000
+	done := false
 	for !done {
-		wg.Add(1)
-		go fetchTransactions(c, contractAddress, page, *offset, &done, wg)
-		page++
-		time.Sleep(time.Second * 1)
+		for i := 0; i < maxRequest; i++ {
+			wg.Add(1)
+			go fetchTransactions(address, page, offset, &done)
+			page++
+		}
+		time.Sleep(time.Second * 5)
 	}
-
 	wg.Wait()
+
 	// Print all holders to the file in csv format.
-	for _, holder := range holders.m {
-		fmt.Fprintf(file, "%s;%s;%d;%d\n", holder.Address, holder.Balance, holder.Transcation, holder.LastActive.Unix())
+	if len(holders.m) > 0 {
+		file := createFile(args[1])
+		defer file.Close()
+		for _, holder := range holders.m {
+			fmt.Fprintf(file, "%s;%s;%d;%d\n", holder.Address, holder.Balance, holder.Transcation, holder.LastActive.Unix())
+		}
 	}
 	end := time.Since(start)
+	log.Printf("%d records stored.\n", len(holders.m))
 	log.Printf("Done in %s.\n", end.String())
 }
 
-func fetchTransactions(c *Client, contractAddress string, page, offset int, done *bool, wg *sync.WaitGroup) {
+func fetchTransactions(address string, page, offset int, done *bool) {
 	defer wg.Done()
-	log.Printf("Fetching %d page...\n", page)
-	txns, err := c.TokenTransferEvents(contractAddress, "", true, page, offset)
+	if verbose {
+		log.Printf("Fetching %d page...\n", page)
+	}
+	txns, err := client.TokenTransferEvents(address, false, page, offset)
 	if err != nil {
-		log.Printf("%s. Refetching %d page...\n", err, page)
-		wg.Add(1)
-		go fetchTransactions(c, contractAddress, page, offset, done, wg)
+		log.Printf("%s\n", err)
+		if err.Error() == "NOTOK" {
+			*done = true
+		} else {
+			wg.Add(1)
+			go fetchTransactions(address, page, offset, done)
+		}
 		return
 	}
 	// Page overflow its maximum.
 	if len(txns) == 0 {
 		*done = true
 	} else {
-		storeTransactions(txns)
+		n := storeHolders(txns)
+		log.Printf("Stored %3d / Common %d\n", n, len(holders.m))
+		if len(holders.m) >= maxNumber {
+			*done = true
+		}
 	}
 }
 
-func storeTransactions(txns []Transcation) {
+func storeHolders(txns []Transcation) (n int) {
 	// Set
 	for _, txn := range txns {
-		timestamp, err := strconv.ParseInt(txn.TimeStamp, 10, 64)
-		if err != nil {
-			log.Println(err)
+		if (len(holders.m) + n) >= maxNumber {
+			return
 		}
-		if holderFrom, ok := holders.Get(txn.From); ok {
-			holderFrom.Transcation++
-			holderFrom.Balance = Sub(holderFrom.Balance, txn.Value)
-		} else {
+		if _, ok := holders.Get(txn.From); !ok {
+			timestamp, _ := strconv.ParseInt(txn.TimeStamp, 10, 64)
 			holders.Set(txn.From, &Holder{
 				Address:     txn.From,
 				Transcation: 1,
-				Balance:     "-" + txn.Value,
+				Balance:     "0",
 				LastActive:  time.Unix(timestamp, 0),
 			})
-		}
-		if holderTo, ok := holders.Get(txn.To); ok {
-			holderTo.Transcation++
-			holderTo.Balance = Add(holderTo.Balance, txn.Value)
-		} else {
-			holders.Set(txn.To, &Holder{
-				Address:     txn.To,
-				Transcation: 1,
-				Balance:     txn.Value,
-				LastActive:  time.Unix(timestamp, 0),
-			})
+			n++
 		}
 	}
+
+	return
+}
+
+func createFile(filename string) *os.File {
+	// Set up file.
+	file, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY, 0660)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	// Truncate file.
+	file.Truncate(0)
+	file.Seek(0, 0)
+
+	return file
+}
+
+func printHelp() {
+	fmt.Printf("etherscan is a simple scanner tool for fetching cryptoholders data and exporting it into csv format.\n\n")
+	fmt.Println("usage: etherscan [TOKEN] [FILE]")
+	flag.PrintDefaults()
 }

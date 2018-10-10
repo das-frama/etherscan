@@ -32,22 +32,19 @@ type Transcation struct {
 
 // TokenTransferEvents get a list of "ERC20 - Token Transfer Events" by Address
 // or get transfer events for a specific token contract
-func (c *Client) TokenTransferEvents(contractAddress, address string, sortAsc bool, page, offset int) ([]Transcation, error) {
+func (c *Client) TokenTransferEvents(address string, sortAsc bool, page, offset int) ([]Transcation, error) {
 	sort := "desc"
 	if sortAsc {
 		sort = "asc"
 	}
 	req, err := c.newRequest(map[string]string{
-		"module":          "account",
-		"action":          "tokentx",
-		"contractaddress": contractAddress,
-		"address":         address,
-		"startblock":      "0",
-		"endblock":        "99999999",
-		"sort":            sort,
-		"apiKey":          c.APIKey,
-		"page":            strconv.Itoa(page),
-		"offset":          strconv.Itoa(offset),
+		"module":  "account",
+		"action":  "txlist",
+		"address": address,
+		"sort":    sort,
+		"apiKey":  c.APIKey,
+		"page":    strconv.Itoa(page),
+		"offset":  strconv.Itoa(offset),
 	})
 
 	response := &Response{}
