@@ -2,14 +2,13 @@ package main
 
 import (
 	"sync"
-	"time"
 )
 
 type Holder struct {
 	Address     string
 	Balance     string
 	Transcation int
-	LastActive  time.Time
+	LastActive  int64
 }
 
 type Holders struct {

@@ -16,6 +16,7 @@ var (
 	maxNumber int
 	apiKey    string
 	verbose   bool
+	maxTxns   int
 	holders   *Holders
 	client    *Client
 	wg        *sync.WaitGroup
@@ -32,6 +33,7 @@ func main() {
 	flag.StringVar(&apiKey, "k", "", "etherscan.io api key to perform all requests (leave it empty to use developer key)")
 	flag.IntVar(&maxNumber, "n", 1000, "how many users to fetch")
 	flag.BoolVar(&verbose, "v", false, "verbose output")
+	flag.IntVar(&maxTxns, "t", 3, "minimum of transactions")
 	flag.Usage = printHelp
 	flag.Parse()
 	// Check arguments.
@@ -59,7 +61,27 @@ func main() {
 			go fetchTransactions(address, page, offset, &done)
 			page++
 		}
-		time.Sleep(time.Second * 5)
+		time.Sleep(time.Second * 10)
+	}
+	wg.Wait()
+
+	log.Println("Start fetching balance for every holder.")
+	// Fetch balance for holders.
+	var addressesToFetch []string
+	i := 1
+	for key, holder := range holders.m {
+		if holder.Transcation >= maxTxns {
+			addressesToFetch = append(addressesToFetch, holder.Address)
+			if (i%20 == 0) || (i == len(holders.m)) {
+				wg.Add(1)
+				go fetchBalances(addressesToFetch)
+				addressesToFetch = addressesToFetch[:0]
+				time.Sleep(time.Millisecond * 150)
+			}
+			i++
+		} else {
+			delete(holders.m, key)
+		}
 	}
 	wg.Wait()
 
@@ -67,8 +89,13 @@ func main() {
 	if len(holders.m) > 0 {
 		file := createFile(args[1])
 		defer file.Close()
-		for _, holder := range holders.m {
-			fmt.Fprintf(file, "%s;%s;%d;%d\n", holder.Address, holder.Balance, holder.Transcation, holder.LastActive.Unix())
+		for key, holder := range holders.m {
+			lastMonth := time.Now().Add(-(time.Hour * 730)).Unix() // Last month
+			if holder.Balance == "0" || holder.LastActive >= lastMonth {
+				delete(holders.m, key)
+			} else {
+				fmt.Fprintf(file, "%s;%s;%d;%d\n", holder.Address, holder.Balance, holder.Transcation, holder.LastActive)
+			}
 		}
 	}
 	end := time.Since(start)
@@ -81,9 +108,9 @@ func fetchTransactions(address string, page, offset int, done *bool) {
 	if verbose {
 		log.Printf("Fetching %d page...\n", page)
 	}
-	txns, err := client.TokenTransferEvents(address, false, page, offset)
+	txns, err := client.NormalTranscations(address, false, page, offset)
 	if err != nil {
-		log.Printf("%s\n", err)
+		log.Println(err)
 		if err.Error() == "NOTOK" {
 			*done = true
 		} else {
@@ -104,19 +131,40 @@ func fetchTransactions(address string, page, offset int, done *bool) {
 	}
 }
 
+func fetchBalances(addresses []string) {
+	defer wg.Done()
+	if verbose {
+		log.Printf("Fetching balance for %d addresses...\n", len(addresses))
+	}
+
+	balances, err := client.BalanceMulti(addresses)
+	if err != nil {
+		log.Println(err)
+		wg.Add(1)
+		go fetchBalances(addresses)
+		return
+	}
+	for _, balance := range balances {
+		if holder, ok := holders.Get(balance.Account); ok {
+			holder.Balance = balance.Balance
+		}
+	}
+}
+
 func storeHolders(txns []Transcation) (n int) {
-	// Set
 	for _, txn := range txns {
 		if (len(holders.m) + n) >= maxNumber {
 			return
 		}
-		if _, ok := holders.Get(txn.From); !ok {
+		if holder, ok := holders.Get(txn.From); ok {
+			holder.Transcation++
+		} else {
 			timestamp, _ := strconv.ParseInt(txn.TimeStamp, 10, 64)
 			holders.Set(txn.From, &Holder{
 				Address:     txn.From,
 				Transcation: 1,
-				Balance:     "0",
-				LastActive:  time.Unix(timestamp, 0),
+				Balance:     "",
+				LastActive:  timestamp,
 			})
 			n++
 		}

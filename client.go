@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -17,22 +18,30 @@ type Client struct {
 	httpClient *http.Client
 }
 
-type Response struct {
+type ResponseTranscations struct {
 	Status  string        `json:"status"`
 	Message string        `json:"message"`
 	Result  []Transcation `json:"result"`
+}
+type ResponseBalance struct {
+	Status  string    `json:"status"`
+	Message string    `json:"message"`
+	Result  []Balance `json:"result"`
+}
+
+type Balance struct {
+	Account string `json:"account"`
+	Balance string `json:"balance"`
 }
 
 type Transcation struct {
 	TimeStamp string `json:"timeStamp"`
 	From      string `json:"from"`
-	To        string `json:"to"`
-	Value     string `json:"value"`
 }
 
-// TokenTransferEvents get a list of "ERC20 - Token Transfer Events" by Address
+// NormalTranscations get a list of "ERC20 - Token Transfer Events" by Address
 // or get transfer events for a specific token contract
-func (c *Client) TokenTransferEvents(address string, sortAsc bool, page, offset int) ([]Transcation, error) {
+func (c *Client) NormalTranscations(address string, sortAsc bool, page, offset int) ([]Transcation, error) {
 	sort := "desc"
 	if sortAsc {
 		sort = "asc"
@@ -47,7 +56,27 @@ func (c *Client) TokenTransferEvents(address string, sortAsc bool, page, offset 
 		"offset":  strconv.Itoa(offset),
 	})
 
-	response := &Response{}
+	response := &ResponseTranscations{}
+	_, err = c.do(req, &response)
+
+	if response.Status != "1" && response.Message != "No transactions found" {
+		err = fmt.Errorf("%s", response.Message)
+		return nil, err
+	}
+
+	return response.Result, err
+}
+
+func (c *Client) BalanceMulti(addresses []string) ([]Balance, error) {
+	address := strings.Join(addresses, ",")
+	req, err := c.newRequest(map[string]string{
+		"module":  "account",
+		"action":  "balancemulti",
+		"address": address,
+		"apiKey":  c.APIKey,
+	})
+
+	response := &ResponseBalance{}
 	_, err = c.do(req, &response)
 
 	if response.Status != "1" && response.Message != "No transactions found" {
